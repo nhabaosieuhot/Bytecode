@@ -27,7 +27,7 @@ h1{font-size:1.5rem;margin-bottom:.3rem;color:#58a6ff}
 </style>
 </head>
 <body>
-<div id="loading"><div class="spinner"></div>Loading Luau compiler + ZSTD...</div>
+<div id="loading"><div class="spinner"></div>Loading Luau + ZSTD WASM...</div>
 <h1>RSB1 Bytecode Compiler</h1>
 <p class="subtitle">Drop .lua source file &rarr; compile + sign + compress &rarr; RSB1</p>
 
@@ -185,51 +185,43 @@ function rsb1Wrap(signed, compressed){
   return buf;
 }
 
-// ===================== Globals =====================
-let luauModule = null;
-let zstdCompressFn = null;
+// ===================== WASM Module =====================
+let M = null;
 
-// ===================== ZSTD =====================
-function loadZstd(){
-  return new Promise((resolve,reject)=>{
-    const s=document.createElement('script');
-    s.src='https://cdn.jsdelivr.net/npm/zstd-codec@0.1.5/lib/zstd-codec.js';
-    s.onload=()=>{
-      if(typeof ZstdCodec==='undefined')return reject(new Error('ZstdCodec not defined'));
-      ZstdCodec.run(zstd=>{
-        const simple=new zstd.Simple();
-        zstdCompressFn=(data,level)=>simple.compress(data,level||22);
-        resolve();
-      });
-    };
-    s.onerror=()=>reject(new Error('ZSTD CDN load failed'));
-    document.head.appendChild(s);
-  });
-}
-
-// ===================== Luau Compile =====================
 function luauCompile(source){
-  const mod = luauModule;
-  const srcLen = mod.lengthBytesUTF8(source);
-  const srcPtr = mod._malloc(srcLen + 1);
-  mod.stringToUTF8(source, srcPtr, srcLen + 1);
+  const srcLen = M.lengthBytesUTF8(source);
+  const srcPtr = M._malloc(srcLen + 1);
+  M.stringToUTF8(source, srcPtr, srcLen + 1);
 
-  const errPtr = mod._getError(srcPtr, srcLen);
+  const errPtr = M._getError(srcPtr, srcLen);
   if (errPtr) {
-    const err = mod.UTF8ToString(errPtr);
-    mod._free(srcPtr);
+    const err = M.UTF8ToString(errPtr);
+    M._free(srcPtr);
     throw new Error('Compile error: ' + err);
   }
 
-  const size = mod._compile(srcPtr, srcLen);
-  mod._free(srcPtr);
+  const size = M._compile(srcPtr, srcLen);
+  M._free(srcPtr);
   if (size <= 0) throw new Error('Compilation failed (empty output)');
 
-  const resultPtr = mod._getResult();
+  const resultPtr = M._getResult();
   const bytecode = new Uint8Array(size);
-  bytecode.set(new Uint8Array(mod.HEAPU8.buffer, resultPtr, size));
-  mod._freeResult();
+  bytecode.set(new Uint8Array(M.HEAPU8.buffer, resultPtr, size));
+  M._freeResult();
   return bytecode;
+}
+
+function zstdCompress(data, level){
+  const bound = M._zstdBound(data.length);
+  const srcPtr = M._malloc(data.length);
+  const dstPtr = M._malloc(bound);
+  M.HEAPU8.set(data, srcPtr);
+  const compSize = M._zstdCompress(srcPtr, data.length, dstPtr, bound, level || 22);
+  if (compSize < 0) { M._free(srcPtr); M._free(dstPtr); throw new Error('ZSTD compression failed'); }
+  const result = new Uint8Array(compSize);
+  result.set(new Uint8Array(M.HEAPU8.buffer, dstPtr, compSize));
+  M._free(srcPtr); M._free(dstPtr);
+  return result;
 }
 
 // ===================== Full Pipeline =====================
@@ -237,11 +229,9 @@ function processLua(source, wrapInTask){
   if (wrapInTask) {
     source = 'task.spawn(function()\n' + source + '\nend)\nwhile true do task.wait(9e9) end';
   }
-
   const bytecode = luauCompile(source);
   const signed = signBytecode(bytecode);
-  const compressed = zstdCompressFn(signed, 22);
-  if (!compressed || !compressed.length) throw new Error('ZSTD compression failed');
+  const compressed = zstdCompress(signed, 22);
   return rsb1Wrap(signed, compressed);
 }
 
@@ -259,7 +249,7 @@ dropZone.addEventListener('click',()=>fileInput.click());
 fileInput.addEventListener('change',()=>{if(fileInput.files[0])handleFile(fileInput.files[0]);});
 
 async function handleFile(file){
-  if(!luauModule||!zstdCompressFn)return setStatus('Still loading...','error');
+  if(!M)return setStatus('Still loading...','error');
   setStatus('Compiling...');
   try{
     const text=await file.text();
@@ -278,10 +268,8 @@ async function handleFile(file){
 }
 
 // ===================== Init =====================
-Promise.all([
-  LuauModule().then(mod => { luauModule = mod; }),
-  loadZstd()
-]).then(() => {
+LuauModule().then(mod => {
+  M = mod;
   document.getElementById('loading').style.display = 'none';
   setStatus('Ready - drop a .lua file');
 }).catch(e => {

@@ -1,0 +1,4 @@
+obj/
+zstd-1.5.6/
+zstd.tar.gz
+zstd_all.c

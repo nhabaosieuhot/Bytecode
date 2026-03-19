@@ -4,6 +4,7 @@
 #include "Luau/Compiler.h"
 #include "Luau/BytecodeBuilder.h"
 #include "Luau/BytecodeUtils.h"
+#include "zstd.h"
 
 class BytecodeEncoder227 : public Luau::BytecodeEncoder {
     void encode(uint32_t* data, size_t count) override {
@@ -29,7 +30,7 @@ int compile(const char* source, int sourceLen) {
     std::string bytecode = Luau::compile(src, {}, {}, &encoder);
 
     if (bytecode.empty()) return 0;
-    if (bytecode[0] == '\0') return 0; // compilation error encoded
+    if (bytecode[0] == '\0') return 0;
 
     g_result_size = bytecode.size();
     g_result = (char*)malloc(g_result_size);
@@ -61,6 +62,18 @@ const char* getError(const char* source, int sourceLen) {
 EMSCRIPTEN_KEEPALIVE
 void freeResult() {
     if (g_result) { free(g_result); g_result = nullptr; g_result_size = 0; }
+}
+
+EMSCRIPTEN_KEEPALIVE
+int zstdCompress(const char* src, int srcLen, char* dst, int dstCap, int level) {
+    size_t ret = ZSTD_compress(dst, dstCap, src, srcLen, level);
+    if (ZSTD_isError(ret)) return -1;
+    return (int)ret;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int zstdBound(int srcLen) {
+    return (int)ZSTD_compressBound(srcLen);
 }
 
 }
