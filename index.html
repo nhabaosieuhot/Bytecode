@@ -27,9 +27,9 @@ h1{font-size:1.5rem;margin-bottom:.3rem;color:#58a6ff}
 </style>
 </head>
 <body>
-<div id="loading"><div class="spinner"></div>Loading Luau + ZSTD WASM...</div>
+<div id="loading"><div class="spinner"></div>Loading WASM engine...</div>
 <h1>RSB1 Bytecode Compiler</h1>
-<p class="subtitle">Drop .lua source file &rarr; compile + sign + compress &rarr; RSB1</p>
+<p class="subtitle">Drop .lua source &rarr; compile + encode + sign + compress &rarr; RSB1</p>
 
 <div id="drop-zone" tabindex="0">
   <div class="icon">&#128196;</div>
@@ -46,234 +46,68 @@ h1{font-size:1.5rem;margin-bottom:.3rem;color:#58a6ff}
 
 <script src="luau.js"></script>
 <script>
-// ===================== XXH32 =====================
-function xxh32(buf, seed) {
-  const P1=0x9E3779B1,P2=0x85EBCA77,P3=0xC2B2AE3D,P4=0x27D4EB2F,P5=0x165667B1;
-  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const len = buf.length;
-  let h, i = 0;
-  if (len >= 16) {
-    let v1=(seed+P1+P2)>>>0, v2=(seed+P2)>>>0, v3=seed>>>0, v4=(seed-P1)>>>0;
-    const lim = len - 16;
-    while (i <= lim) {
-      v1=Math.imul(rol32((v1+Math.imul(dv.getUint32(i,true),P2))>>>0,13),P1)>>>0; i+=4;
-      v2=Math.imul(rol32((v2+Math.imul(dv.getUint32(i,true),P2))>>>0,13),P1)>>>0; i+=4;
-      v3=Math.imul(rol32((v3+Math.imul(dv.getUint32(i,true),P2))>>>0,13),P1)>>>0; i+=4;
-      v4=Math.imul(rol32((v4+Math.imul(dv.getUint32(i,true),P2))>>>0,13),P1)>>>0; i+=4;
-    }
-    h=(rol32(v1,1)+rol32(v2,7)+rol32(v3,12)+rol32(v4,18))>>>0;
-  } else { h=(seed+P5)>>>0; }
-  h=(h+len)>>>0;
-  while(i<=len-4){h=Math.imul(rol32((h+Math.imul(dv.getUint32(i,true),P3))>>>0,17),P4)>>>0;i+=4;}
-  while(i<len){h=Math.imul(rol32((h+Math.imul(buf[i++],P5))>>>0,11),P1)>>>0;}
-  h^=h>>>15;h=Math.imul(h,P2)>>>0;h^=h>>>13;h=Math.imul(h,P3)>>>0;h^=h>>>15;
-  return h>>>0;
-}
-function rol32(v,n){return((v<<n)|(v>>>(32-n)))>>>0}
-function ror32(v,n){return((v>>>n)|(v<<(32-n)))>>>0}
-
-// ===================== BLAKE3 =====================
-const B3_IV=Uint32Array.of(0x6A09E667,0xBB67AE85,0x3C6EF372,0xA54FF53A,0x510E527F,0x9B05688C,0x1F83D9AB,0x5BE0CD19);
-const B3_PERM=[2,6,3,10,7,0,4,13,1,11,12,5,9,14,15,8];
-
-function b3g(s,a,b,c,d,mx,my){
-  s[a]=(s[a]+s[b]+mx)>>>0;s[d]=ror32(s[d]^s[a],16);
-  s[c]=(s[c]+s[d])>>>0;s[b]=ror32(s[b]^s[c],12);
-  s[a]=(s[a]+s[b]+my)>>>0;s[d]=ror32(s[d]^s[a],8);
-  s[c]=(s[c]+s[d])>>>0;s[b]=ror32(s[b]^s[c],7);
-}
-function b3round(s,m){
-  b3g(s,0,4,8,12,m[0],m[1]);b3g(s,1,5,9,13,m[2],m[3]);
-  b3g(s,2,6,10,14,m[4],m[5]);b3g(s,3,7,11,15,m[6],m[7]);
-  b3g(s,0,5,10,15,m[8],m[9]);b3g(s,1,6,11,12,m[10],m[11]);
-  b3g(s,2,7,8,13,m[12],m[13]);b3g(s,3,4,9,14,m[14],m[15]);
-}
-function b3compress(cv,blockBytes,counter,blockLen,flags){
-  const s=new Uint32Array(16);
-  s.set(cv);s[8]=B3_IV[0];s[9]=B3_IV[1];s[10]=B3_IV[2];s[11]=B3_IV[3];
-  s[12]=counter>>>0;s[13]=(counter/0x100000000)>>>0;s[14]=blockLen;s[15]=flags;
-  const dv=new DataView(blockBytes.buffer,blockBytes.byteOffset,64);
-  let m=new Uint32Array(16);
-  for(let i=0;i<16;i++)m[i]=dv.getUint32(i*4,true);
-  for(let r=0;r<7;r++){b3round(s,m);const pm=new Uint32Array(16);for(let i=0;i<16;i++)pm[i]=m[B3_PERM[i]];m=pm;}
-  for(let i=0;i<8;i++){s[i]^=s[i+8];s[i+8]^=cv[i];}
-  return s;
-}
-function blake3(input){
-  const out=new Uint8Array(32);
-  if(!input.length){
-    const s=b3compress(new Uint32Array(B3_IV),new Uint8Array(64),0,0,1|2|8);
-    const dv=new DataView(out.buffer);for(let i=0;i<8;i++)dv.setUint32(i*4,s[i],true);return out;
-  }
-  const totalChunks=Math.ceil(input.length/1024)||1;
-  const cvStack=[];let added=0;
-  for(let ci=0;ci<totalChunks;ci++){
-    const cs=ci*1024,ce=Math.min(cs+1024,input.length);
-    const chunk=input.slice(cs,ce);
-    const nb=Math.ceil(chunk.length/64)||1;
-    let cv=new Uint32Array(B3_IV);
-    for(let bi=0;bi<nb;bi++){
-      const bs=bi*64,be=Math.min(bs+64,chunk.length);
-      const raw=chunk.slice(bs,be);
-      const block=new Uint8Array(64);block.set(raw);
-      let fl=0;if(bi===0)fl|=1;if(bi===nb-1)fl|=2;
-      const isRoot=totalChunks===1&&bi===nb-1;
-      if(isRoot)fl|=8;
-      const s=b3compress(cv,block,ci,raw.length,fl);
-      if(isRoot){const dv=new DataView(out.buffer);for(let i=0;i<8;i++)dv.setUint32(i*4,s[i],true);return out;}
-      cv=new Uint32Array(s.buffer.slice(0,32));
-    }
-    cvStack.push(cv);added++;
-    let c=added;
-    while((c&1)===0){
-      const r=cvStack.pop(),l=cvStack.pop();
-      const blk=new Uint8Array(64);const bdv=new DataView(blk.buffer);
-      for(let i=0;i<8;i++){bdv.setUint32(i*4,l[i],true);bdv.setUint32(32+i*4,r[i],true);}
-      const s=b3compress(new Uint32Array(B3_IV),blk,0,64,4);
-      cvStack.push(new Uint32Array(s.buffer.slice(0,32)));c>>>=1;
-    }
-  }
-  while(cvStack.length>1){
-    const r=cvStack.pop(),l=cvStack[cvStack.length-1];
-    const blk=new Uint8Array(64);const bdv=new DataView(blk.buffer);
-    for(let i=0;i<8;i++){bdv.setUint32(i*4,l[i],true);bdv.setUint32(32+i*4,r[i],true);}
-    let fl=4;if(cvStack.length===1)fl|=8;
-    const s=b3compress(new Uint32Array(B3_IV),blk,0,64,fl);
-    cvStack[cvStack.length-1]=new Uint32Array(s.buffer.slice(0,32));
-  }
-  const dv=new DataView(out.buffer);
-  for(let i=0;i<8;i++)dv.setUint32(i*4,cvStack[0][i],true);
-  return out;
-}
-
-// ===================== RSB1 Sign + Compress =====================
-const MAGIC_A=0x4C464F52,MAGIC_B=0x946AC432;
-const KEY=[0x52,0x4F,0x46,0x4C];
-function rotl8(v,s){s&=7;return((v<<s)|(v>>>(8-s)))&0xFF;}
-
-function signBytecode(bc){
-  const hash=blake3(bc);
-  const th=new Uint8Array(32);
-  for(let i=0;i<32;i++){
-    const k=KEY[i&3],h=hash[i],c=(k+i)&0xFF;
-    switch(i&3){
-      case 0:th[i]=rotl8((h^(~k&0xFF))&0xFF,(c&3)+1);break;
-      case 1:th[i]=rotl8((k^(~h&0xFF))&0xFF,(c&3)+2);break;
-      case 2:th[i]=rotl8((h^(~k&0xFF))&0xFF,(c&3)+3);break;
-      case 3:th[i]=rotl8((k^(~h&0xFF))&0xFF,(c&3)+4);break;
-    }
-  }
-  const footer=new Uint8Array(40);
-  const fdv=new DataView(footer.buffer);
-  const d0=(th[0]|(th[1]<<8)|(th[2]<<16)|(th[3]<<24))>>>0;
-  fdv.setUint32(0,(d0^MAGIC_B)>>>0,true);
-  fdv.setUint32(4,(d0^MAGIC_A)>>>0,true);
-  footer.set(th,8);
-  const result=new Uint8Array(bc.length+40);
-  result.set(bc);result.set(footer,bc.length);
-  return result;
-}
-
-function rsb1Wrap(signed, compressed){
-  const buf=new Uint8Array(8+compressed.length);
-  buf[0]=0x52;buf[1]=0x53;buf[2]=0x42;buf[3]=0x31;
-  new DataView(buf.buffer).setUint32(4,signed.length,true);
-  buf.set(new Uint8Array(compressed),8);
-  const hk=xxh32(buf,42);
-  const kb=[(hk)&0xFF,(hk>>>8)&0xFF,(hk>>>16)&0xFF,(hk>>>24)&0xFF];
-  for(let i=0;i<buf.length;i++)buf[i]^=(kb[i%4]+i*41)&0xFF;
-  return buf;
-}
-
-// ===================== WASM Module =====================
 let M = null;
 
-function luauCompile(source){
+function processLua(source, wrapTask) {
   const srcLen = M.lengthBytesUTF8(source);
   const srcPtr = M._malloc(srcLen + 1);
   M.stringToUTF8(source, srcPtr, srcLen + 1);
 
-  const errPtr = M._getError(srcPtr, srcLen);
+  const errPtr = M._getError(srcPtr, srcLen, wrapTask ? 1 : 0);
   if (errPtr) {
     const err = M.UTF8ToString(errPtr);
     M._free(srcPtr);
-    throw new Error('Compile error: ' + err);
+    throw new Error(err);
   }
 
-  const size = M._compile(srcPtr, srcLen);
+  const size = M._compileFull(srcPtr, srcLen, wrapTask ? 1 : 0);
   M._free(srcPtr);
-  if (size <= 0) throw new Error('Compilation failed (empty output)');
+  if (size <= 0) throw new Error('Compilation produced empty output');
 
   const resultPtr = M._getResult();
-  const bytecode = new Uint8Array(size);
-  bytecode.set(new Uint8Array(M.HEAPU8.buffer, resultPtr, size));
+  const result = new Uint8Array(size);
+  result.set(new Uint8Array(M.HEAPU8.buffer, resultPtr, size));
   M._freeResult();
-  return bytecode;
-}
-
-function zstdCompress(data, level){
-  const bound = M._zstdBound(data.length);
-  const srcPtr = M._malloc(data.length);
-  const dstPtr = M._malloc(bound);
-  M.HEAPU8.set(data, srcPtr);
-  const compSize = M._zstdCompress(srcPtr, data.length, dstPtr, bound, level || 22);
-  if (compSize < 0) { M._free(srcPtr); M._free(dstPtr); throw new Error('ZSTD compression failed'); }
-  const result = new Uint8Array(compSize);
-  result.set(new Uint8Array(M.HEAPU8.buffer, dstPtr, compSize));
-  M._free(srcPtr); M._free(dstPtr);
   return result;
 }
 
-// ===================== Full Pipeline =====================
-function processLua(source, wrapInTask){
-  if (wrapInTask) {
-    source = 'task.spawn(function()\n' + source + '\nend)\nwhile true do task.wait(9e9) end';
-  }
-  const bytecode = luauCompile(source);
-  const signed = signBytecode(bytecode);
-  const compressed = zstdCompress(signed, 22);
-  return rsb1Wrap(signed, compressed);
-}
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+const status = document.getElementById('status');
 
-// ===================== UI =====================
-const dropZone=document.getElementById('drop-zone');
-const fileInput=document.getElementById('file-input');
-const status=document.getElementById('status');
+function setStatus(msg, cls) { status.textContent = msg; status.className = cls || ''; }
 
-function setStatus(msg,cls){status.textContent=msg;status.className=cls||'';}
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+dropZone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) handleFile(fileInput.files[0]); });
 
-dropZone.addEventListener('dragover',e=>{e.preventDefault();dropZone.classList.add('drag-over');});
-dropZone.addEventListener('dragleave',()=>dropZone.classList.remove('drag-over'));
-dropZone.addEventListener('drop',e=>{e.preventDefault();dropZone.classList.remove('drag-over');if(e.dataTransfer.files[0])handleFile(e.dataTransfer.files[0]);});
-dropZone.addEventListener('click',()=>fileInput.click());
-fileInput.addEventListener('change',()=>{if(fileInput.files[0])handleFile(fileInput.files[0]);});
-
-async function handleFile(file){
-  if(!M)return setStatus('Still loading...','error');
+async function handleFile(file) {
+  if (!M) return setStatus('Still loading...', 'error');
   setStatus('Compiling...');
-  try{
-    const text=await file.text();
-    const wrap=document.getElementById('wrap-task').checked;
-    const result=processLua(text,wrap);
+  try {
+    const text = await file.text();
+    const wrap = document.getElementById('wrap-task').checked;
+    const result = processLua(text, wrap);
 
-    const blob=new Blob([result],{type:'application/octet-stream'});
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement('a');
-    a.href=url;
-    a.download=file.name.replace(/\.(lua|luau|txt)$/i,'')+'.bin';
+    const blob = new Blob([result], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = file.name.replace(/\.(lua|luau|txt)$/i, '') + '.bin';
     a.click();
     URL.revokeObjectURL(url);
-    setStatus('Done! '+text.length+' chars source -> '+result.length+' bytes RSB1','ok');
-  }catch(e){setStatus(e.message,'error');console.error(e);}
+    setStatus('Done! ' + text.length + ' chars source -> ' + result.length + ' bytes RSB1', 'ok');
+  } catch (e) { setStatus(e.message, 'error'); console.error(e); }
 }
 
-// ===================== Init =====================
 LuauModule().then(mod => {
   M = mod;
   document.getElementById('loading').style.display = 'none';
   setStatus('Ready - drop a .lua file');
 }).catch(e => {
-  document.getElementById('loading').innerHTML = '<span style="color:#f85149">Load failed: '+e.message+'</span>';
+  document.getElementById('loading').innerHTML = '<span style="color:#f85149">Load failed: ' + e.message + '</span>';
   console.error(e);
 });
 </script>
