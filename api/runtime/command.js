@@ -1,4 +1,4 @@
-const { enqueue, latestResult, hasBlobStore } = require("../_lib/runtime-store");
+const { enqueue, hasBlobStore } = require("../_lib/runtime-store");
 const { readBody } = require("../_lib/read-body");
 
 function setCors(res) {
@@ -10,35 +10,41 @@ function setCors(res) {
 module.exports = async function handler(req, res) {
   setCors(res);
 
-  if (req.method === "OPTIONS") {
-    res.status(204).end();
-    return;
+  try {
+    if (req.method === "OPTIONS") {
+      res.status(204).end();
+      return;
+    }
+
+    if (req.method !== "POST") {
+      res.status(405).json({ ok: false, error: "method not allowed" });
+      return;
+    }
+
+    const body = readBody(req.body);
+    const clientId = typeof body.clientId === "string" ? body.clientId : "";
+    const source = typeof body.source === "string" ? body.source : "";
+
+    if (!clientId || !source) {
+      res.status(400).json({ ok: false, error: "missing clientId or source" });
+      return;
+    }
+
+    const command = await enqueue(clientId, {
+      type: body.type,
+      source,
+      label: body.label
+    });
+
+    res.status(200).json({
+      ok: true,
+      provider: hasBlobStore ? "blob" : "memory",
+      command
+    });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: error && error.message ? error.message : "command handler failed"
+    });
   }
-
-  if (req.method !== "POST") {
-    res.status(405).json({ ok: false, error: "method not allowed" });
-    return;
-  }
-
-  const body = readBody(req.body);
-  const clientId = typeof body.clientId === "string" ? body.clientId : "";
-  const source = typeof body.source === "string" ? body.source : "";
-
-  if (!clientId || !source) {
-    res.status(400).json({ ok: false, error: "missing clientId or source" });
-    return;
-  }
-
-  const command = await enqueue(clientId, {
-    type: body.type,
-    source,
-    label: body.label
-  });
-
-  res.status(200).json({
-    ok: true,
-    provider: hasBlobStore ? "blob" : "memory",
-    command,
-    latestResult: await latestResult(clientId)
-  });
 };
