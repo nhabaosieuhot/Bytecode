@@ -74,7 +74,7 @@ async function loadBlobState(clientId) {
 async function saveBlobState(clientId, state) {
   const pathname = stateKey(clientId);
   await put(pathname, JSON.stringify(normalizeState(state)), {
-    access: "public",
+    access: "private",
     allowOverwrite: true,
     addRandomSuffix: false,
     contentType: "application/json"
