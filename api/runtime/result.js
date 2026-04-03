@@ -1,4 +1,5 @@
 const { pushResult, hasBlobStore } = require("../_lib/runtime-store");
+const { readBody } = require("../_lib/read-body");
 
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -19,7 +20,7 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
+  const body = readBody(req.body);
   const clientId = typeof body.clientId === "string" ? body.clientId : "";
 
   if (!clientId) {
