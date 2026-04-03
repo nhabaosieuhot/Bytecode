@@ -45,8 +45,14 @@ function stateKey(clientId) {
 }
 
 async function readBlobText(url) {
+  const headers = {};
+  if (process.env.BLOB_READ_WRITE_TOKEN) {
+    headers.Authorization = `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}`;
+  }
+
   const response = await fetch(url, {
-    cache: "no-store"
+    cache: "no-store",
+    headers
   });
 
   if (!response.ok) {
