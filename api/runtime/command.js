@@ -1,4 +1,4 @@
-const { enqueue, latestResult } = require("../_lib/runtime-store");
+const { enqueue, latestResult, hasBlobStore } = require("../_lib/runtime-store");
 
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -28,7 +28,7 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const command = enqueue(clientId, {
+  const command = await enqueue(clientId, {
     type: body.type,
     source,
     label: body.label
@@ -36,7 +36,8 @@ module.exports = async function handler(req, res) {
 
   res.status(200).json({
     ok: true,
+    provider: hasBlobStore ? "blob" : "memory",
     command,
-    latestResult: latestResult(clientId)
+    latestResult: await latestResult(clientId)
   });
 };

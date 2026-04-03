@@ -1,4 +1,4 @@
-const { register } = require("../_lib/runtime-store");
+const { register, hasBlobStore } = require("../_lib/runtime-store");
 
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -20,6 +20,10 @@ module.exports = async function handler(req, res) {
   }
 
   const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
-  const clientId = register(body.clientId);
-  res.status(200).json({ ok: true, clientId });
+  const clientId = await register(body.clientId);
+  res.status(200).json({
+    ok: true,
+    clientId,
+    provider: hasBlobStore ? "blob" : "memory"
+  });
 };

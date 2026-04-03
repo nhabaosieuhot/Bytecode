@@ -1,4 +1,4 @@
-const { poll, latestResult } = require("../_lib/runtime-store");
+const { poll, latestResult, hasBlobStore } = require("../_lib/runtime-store");
 
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -27,7 +27,8 @@ module.exports = async function handler(req, res) {
 
   res.status(200).json({
     ok: true,
-    command: poll(clientId),
-    latestResult: latestResult(clientId)
+    provider: hasBlobStore ? "blob" : "memory",
+    command: await poll(clientId),
+    latestResult: await latestResult(clientId)
   });
 };
